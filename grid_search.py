@@ -18,11 +18,8 @@ features = [col for col in pokemon.columns if col not in [
     'Image', 'Index', 'English Name', 'Chinese name', 'Total',
     'HP', 'Attack', 'Defense', 'SP. Atk.', 'SP. Def', 'Speed', 'Legendary'
 ]]
-# features.append('English Name Encoded')
 
 targets = ['HP', 'Attack', 'Defense', 'SP. Atk.', 'SP. Def', 'Speed']
-
-
 
 # 儲存結果
 xgb_results = {}
