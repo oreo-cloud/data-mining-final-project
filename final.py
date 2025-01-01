@@ -3,12 +3,12 @@ import numpy as np
 import os
 import torch
 import torchvision.transforms as transforms
-from torchvision.models import resnet50
+from torchvision.models import resnet50, ResNet50_Weights
 from PIL import Image
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import mean_squared_error
 import xgboost as xgb
-from torchvision.models import resnet50, ResNet50_Weights
 
 # 讀取CSV數據
 file_path = 'pokedex.csv'
@@ -44,7 +44,7 @@ def extract_image_features_pytorch(image_path):
     except Exception as e:
         return np.zeros((2048,))  # 如果圖片無法載入，返回零向量
 
-print(f"Start to extracting image feature...")
+print(f"Start extracting image features...")
 # 提取所有圖片特徵
 pokemon['image_features'] = pokemon['image_path'].apply(extract_image_features_pytorch)
 
@@ -53,56 +53,75 @@ image_features = np.vstack(pokemon['image_features'].values)
 image_features_df = pd.DataFrame(image_features, columns=[f'img_feat_{i}' for i in range(image_features.shape[1])])
 pokemon = pd.concat([pokemon.reset_index(drop=True), image_features_df], axis=1)
 
-# 移除不需要的欄位，確保所有特徵為數值型
+# 對 English Name 進行 Label Encoding
+print("Encoding English Name...")
+label_encoder = LabelEncoder()
+pokemon['English_Name_Label'] = label_encoder.fit_transform(pokemon['English Name'].fillna('Unknown'))
+
+# 確保 Legendary 為數值型
+pokemon['Legendary'] = pokemon['Legendary'].apply(lambda x: 1 if x else 0)
+
+# 定義特徵集
 features = [col for col in pokemon.columns if col not in [
     'Image', 'Index', 'English Name', 'Chinese name', 'Total', 'HP', 'Attack',
-    'Defense', 'SP. Atk.', 'SP. Def', 'Speed', 'Legendary', 'image_path', 'image_features'
+    'Defense', 'SP. Atk.', 'SP. Def', 'Speed', 'image_path', 'image_features'
 ]]
 
-# 定義數值特徵與目標值
 X = pokemon[features]
 X = X.apply(pd.to_numeric, errors='coerce').fillna(0)
+
+print(X.columns)
+
 targets = ['HP', 'Attack', 'Defense', 'SP. Atk.', 'SP. Def', 'Speed']
 
-# 儲存結果
-xgb_final_results_with_images = {}
-
-# 每個目標值的最佳參數
-best_params_per_target = {
-    'HP': {'colsample_bytree': 0.8, 'learning_rate': 0.01, 'max_depth': 3, 'n_estimators': 300, 'reg_alpha': 0, 'reg_lambda': 10.0, 'subsample': 0.8},
-    'Attack': {'colsample_bytree': 0.6, 'learning_rate': 0.05, 'max_depth': 3, 'n_estimators': 200, 'reg_alpha': 0.1, 'reg_lambda': 10.0, 'subsample': 0.8},
-    'Defense': {'colsample_bytree': 0.6, 'learning_rate': 0.05, 'max_depth': 4, 'n_estimators': 100, 'reg_alpha': 0, 'reg_lambda': 1.0, 'subsample': 0.6},
-    'SP. Atk.': {'colsample_bytree': 0.6, 'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 200, 'reg_alpha': 0.1, 'reg_lambda': 10.0, 'subsample': 0.8},
-    'SP. Def': {'colsample_bytree': 0.6, 'learning_rate': 0.01, 'max_depth': 5, 'n_estimators': 200, 'reg_alpha': 1.0, 'reg_lambda': 1.0, 'subsample': 0.6},
-    'Speed': {'colsample_bytree': 0.6, 'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 100, 'reg_alpha': 1.0, 'reg_lambda': 1.0, 'subsample': 0.6}
+# 定義最佳超參數
+best_params_all_targets = {
+    'HP': {'colsample_bytree': 0.8, 'learning_rate': 0.05, 'max_depth': 4, 'n_estimators': 200, 'subsample': 0.8},
+    'Attack': {'colsample_bytree': 0.6, 'learning_rate': 0.05, 'max_depth': 3, 'n_estimators': 200, 'subsample': 0.8},
+    'Defense': {'colsample_bytree': 0.8, 'learning_rate': 0.05, 'max_depth': 3, 'n_estimators': 200, 'subsample': 0.8},
+    'SP. Atk.': {'colsample_bytree': 0.6, 'learning_rate': 0.05, 'max_depth': 3, 'n_estimators': 200, 'subsample': 0.8},
+    'SP. Def': {'colsample_bytree': 0.6, 'learning_rate': 0.05, 'max_depth': 4, 'n_estimators': 100, 'subsample': 0.8},
+    'Speed': {'colsample_bytree': 0.8, 'learning_rate': 0.05, 'max_depth': 3, 'n_estimators': 100, 'subsample': 0.6}
 }
 
+# 儲存最終結果
+final_results = {}
 
-# 使用最佳參數進行預測
+# 逐一目標使用最佳超參數進行模型訓練
 for target in targets:
-    print(f"Start training {target} XGBoost models...")
+    print(f"Training final model for {target} with best parameters...")
     y = pokemon[target].apply(pd.to_numeric, errors='coerce').fillna(0)
     
     # 分割資料集
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    # 使用對應的最佳參數初始化 XGBoost 模型
-    best_params = best_params_per_target[target]
-    xgb_model = xgb.XGBRegressor(objective='reg:squarederror', random_state=42, **best_params)
-    xgb_model.fit(X_train, y_train)
+    # 使用該目標的最佳參數初始化 XGBoost 模型
+    best_params = best_params_all_targets[target]
+    model = xgb.XGBRegressor(
+        objective='reg:squarederror',
+        tree_method='hist',
+        device='cuda',  # 確保使用 GPU
+        random_state=42,
+        **best_params
+    )
     
-    print(f"Start predicting {target}...")
-    # 預測與評估
-    y_pred = xgb_model.predict(X_test)
+    # 訓練模型
+    model.fit(X_train, y_train)
+    
+    # 預測與評估（移除 DMatrix）
+    y_pred = model.predict(X_test)
     mse = mean_squared_error(y_test, y_pred)
     rmse = np.sqrt(mse)
     
+    print(f"Final RMSE for {target}: {rmse}")
+    
     # 儲存結果
-    xgb_final_results_with_images[target] = {
+    final_results[target] = {
         'rmse': rmse,
         'predictions': y_pred[:5]  # 儲存前五個預測值
     }
 
-for target, results in xgb_final_results_with_images.items():
-    print(f"RMSE for {target}: {results['rmse']}")
+# 輸出最終結果
+for target, results in final_results.items():
+    print(f"Final RMSE for {target}: {results['rmse']}")
     print(f"Predictions for {target}: {results['predictions']}")
