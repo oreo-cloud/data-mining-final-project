@@ -1,4 +1,3 @@
-# HP defense speed 做分屬性的預測
 import pandas as pd
 import numpy as np
 import os
@@ -62,23 +61,12 @@ pokemon['English_Name_Label'] = label_encoder.fit_transform(pokemon['English Nam
 # 確保 Legendary 為數值型
 pokemon['Legendary'] = pokemon['Legendary'].apply(lambda x: 1 if x else 0)
 
-# 分割資料集
+# 定義目標屬性和種族值
+attributes = ['Normal', 'Fighting', 'Flying', 'Poison', 'Ground', 'Rock', 'Bug', 'Ghost', 'Steel', 'Water', 'Fire', 'Grass', 'Electric', 'Psychic', 'Ice', 'Dragon', 'Dark', 'Fairy']
 targets = ['HP', 'Attack', 'Defense', 'SP. Atk.', 'SP. Def', 'Speed']
-train_set, test_set = train_test_split(pokemon, test_size=0.2, random_state=42)
 
-# 提取特徵和目標
-features = [col for col in train_set.columns if col not in [
-    'Image', 'Index', 'English Name', 'Chinese name', 'Total', 'HP', 'Attack',
-    'Defense', 'SP. Atk.', 'SP. Def', 'Speed', 'image_path', 'image_features'
-]]
-
-X_train = train_set[features].apply(pd.to_numeric, errors='coerce').fillna(0)
-X_test = test_set[features].apply(pd.to_numeric, errors='coerce').fillna(0)
-
-final = pd.DataFrame({
-    'English Name': test_set['English Name'].reset_index(drop=True),
-    'Chinese Name': test_set['Chinese name'].reset_index(drop=True)
-})
+# 儲存結果的數據框
+all_results = []
 
 # 定義最佳超參數
 best_params_all_targets = {
@@ -90,52 +78,66 @@ best_params_all_targets = {
     'Speed': {'colsample_bytree': 0.8, 'learning_rate': 0.05, 'max_depth': 3, 'n_estimators': 100, 'subsample': 0.6}
 }
 
-# 儲存最終結果
-final_results = {}
+# 為每個屬性進行模型訓練
+for attr in attributes:
+    print(f"Processing attribute: {attr}")
+    attr_data = pokemon[pokemon[attr] == 1]
+    train_set, test_set = train_test_split(attr_data, test_size=0.2, random_state=42)
+    
 
-# 逐一目標使用最佳超參數進行模型訓練
-for target in targets:
-    print(f"Training final model for {target} with best parameters...")
-    y_train = train_set[target].apply(pd.to_numeric, errors='coerce').fillna(0)
-    y_test = test_set[target].apply(pd.to_numeric, errors='coerce').fillna(0)
+    features = [col for col in train_set.columns if col not in [
+        'Image', 'Index', 'English Name', 'Chinese name', 'Total', 'HP', 'Attack',
+        'Defense', 'SP. Atk.', 'SP. Def', 'Speed', 'image_path', 'image_features', 'Type 1', 'Type 2'
+    ]]
 
-    # 使用該目標的最佳參數初始化 XGBoost 模型
-    best_params = best_params_all_targets[target]
-    model = xgb.XGBRegressor(
-        objective='reg:squarederror',
-        tree_method='hist',
-        device='cuda',  # 確保使用 GPU
-        random_state=42,
-        **best_params
-    )
+    X_train = train_set[features].apply(pd.to_numeric, errors='coerce').fillna(0)
+    X_test = test_set[features].apply(pd.to_numeric, errors='coerce').fillna(0)
 
-    # 訓練模型
-    model.fit(X_train, y_train)
+    attr_results = pd.DataFrame({
+        'English Name': test_set['English Name'].reset_index(drop=True),
+        'Chinese Name': test_set['Chinese name'].reset_index(drop=True),
+        'Type': attr
+    })
 
-    # 預測與評估
-    y_pred = model.predict(X_test)
-    mse = mean_squared_error(y_test, y_pred)
-    rmse = np.sqrt(mse)
+    # 為每個目標變數訓練 6 個模型
+    for target in targets:
+        print(f"Training 6 models for {attr} - {target}...")
+        y_train = train_set[target].apply(pd.to_numeric, errors='coerce').fillna(0)
+        y_test = test_set[target].apply(pd.to_numeric, errors='coerce').fillna(0)
 
-    percentage_rmse = (rmse / (train_set[target].max() - train_set[target].min())) * 100 if (train_set[target].max() - train_set[target].min()) != 0 else float('inf')
+        print(f"Training model for {attr} - {target}...")
 
-    print(f"Final %RMSE for {target}: {percentage_rmse}%")
+        # 定義 XGBoost 模型參數
+        best_params = best_params_all_targets[target]
 
-    # 儲存結果
-    final_results[target] = {
-        'rmse': rmse,
-        'percentage_rmse': percentage_rmse,
-        'predictions': y_pred[:5]  # 儲存前五個預測值
-    }
+        model = xgb.XGBRegressor(
+            objective='reg:squarederror',
+            tree_method='hist',
+            device='cuda',  # 確保使用 GPU
+            random_state=42,
+            **best_params
+        )
 
-    final[f'{target}_Predict'] = y_pred
-    final[f'{target}_Actual'] = y_test.reset_index(drop=True)
+        # 訓練模型
+        model.fit(X_train, y_train)
 
-# 合併所有預測與實際值並輸出為CSV
-final.to_csv('predictions_with_actuals.csv', index=False, encoding='utf-8-sig')
-print("Predictions and actual values have been saved to 'predictions_with_actuals.csv'")
+        # 預測與評估
+        y_pred = model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        rmse = np.sqrt(mse)
 
-# 輸出最終結果  
-for target, results in final_results.items():
-    print(f"Final %RMSE for {target}: {results['percentage_rmse']}%")
-    print(f"Predictions for {target}: {results['predictions']}")
+        percentage_rmse = (rmse / (train_set[target].max() - train_set[target].min())) * 100 if (train_set[target].max() - train_set[target].min()) != 0 else float('inf')
+
+        print(f"Model %RMSE for {attr} - {target}: {percentage_rmse}%")
+
+        # 儲存預測結果
+        attr_results[f'{target}_Predict_Model'] = y_pred
+
+        attr_results[f'{target}_Actual'] = y_test.reset_index(drop=True)
+
+    all_results.append(attr_results)
+
+# 合併所有結果並輸出為CSV
+final_results = pd.concat(all_results, axis=0)
+final_results.to_csv('attribute_based_predictions.csv', index=False, encoding='utf-8-sig')
+print("Attribute-based predictions have been saved to 'attribute_based_predictions.csv'")
